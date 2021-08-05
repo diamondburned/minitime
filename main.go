@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -52,18 +54,28 @@ func main() {
 		}()
 	}
 
-	var scanner = bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		// Do a quick, no alloc check.
-		if !bytes.Contains(scanner.Bytes(), []byte("->")) {
+	reader := bufio.NewReaderSize(os.Stdin, bufio.MaxScanTokenSize)
+	for {
+		line, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				log.Fatalln("failed to scan:", err)
+			}
+
+			break
+		}
+
+		if isPrefix {
+			// Line too long; skip.
 			continue
 		}
 
-		lineIn <- scanner.Text()
-	}
+		// Do a quick, no alloc check.
+		if !bytes.Contains(line, []byte("->")) {
+			continue
+		}
 
-	if err := scanner.Err(); err != nil {
-		log.Fatalln("scanning error:", err)
+		lineIn <- string(line)
 	}
 
 	close(lineIn)
@@ -84,7 +96,11 @@ func main() {
 		fmt.Println("Longest execution sorted by time:")
 
 		for _, line := range lines {
-			fmt.Fprintf(w, "%s \t| %s\n", line.Duration, ellipsize(line.Command, maxColumns))
+			fmt.Fprintf(w,
+				"%s \t| %s\n",
+				line.Duration,
+				ellipsize(baseCmd(line.Command), maxColumns),
+			)
 		}
 
 		if err := w.Flush(); err != nil {
@@ -121,6 +137,11 @@ func ellipsize(str string, max int) string {
 	return str[:max-3] + "..."
 }
 
+func baseCmd(command string) string {
+	parts := strings.SplitAfterN(command, " ", 2)
+	return filepath.Base(parts[0]) + parts[1]
+}
+
 func lineCollector(output <-chan Line) []Line {
 	var lines []Line
 	for out := range output {
@@ -145,8 +166,6 @@ func parseLine(line string) (Line, bool) {
 
 	// Join the commands back; spare the last part.
 	command := strings.Join(parts[:len(parts)-1], " -> ")
-	// Base path the command.
-	command = baseCmd(command)
 
 	d, err := time.ParseDuration(parts[len(parts)-1])
 	if err != nil {
@@ -158,9 +177,4 @@ func parseLine(line string) (Line, bool) {
 		Command:  command,
 		Duration: d,
 	}, true
-}
-
-func baseCmd(command string) string {
-	parts := strings.SplitAfterN(command, " ", 2)
-	return filepath.Base(parts[0]) + parts[1]
 }
